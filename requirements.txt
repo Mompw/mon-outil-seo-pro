@@ -1,0 +1,7 @@
+streamlit
+requests
+trafilatura
+scikit-learn
+pandas
+numpy
+fpdf
