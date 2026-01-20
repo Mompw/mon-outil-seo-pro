@@ -1,81 +1,119 @@
 import streamlit as st
-import requests
 import pandas as pd
 from datetime import datetime
+from serpapi import GoogleSearch
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="SEO Rank Tracker Freelance", layout="wide")
-SERPER_API_KEY = st.secrets["SERPER_API_KEY"]
+st.set_page_config(page_title="SEO Rank Tracker - SerpApi", layout="wide")
+SERPAPI_KEY = st.secrets["SERPAPI_KEY"]
+
+# Dictionnaire de configuration par pays
+CONF_PAYS = {
+    "France": {
+        "gl": "fr", 
+        "hl": "fr", 
+        "google_domain": "google.fr", 
+        "location": "France"
+    },
+    "États-Unis": {
+        "gl": "us", 
+        "hl": "en", 
+        "google_domain": "google.com", 
+        "location": "United States"
+    }
+}
 
 # --- FONCTIONS ---
 
-def check_ranking(query, domain, gl="fr", hl="fr"):
-    """Cherche la position d'un domaine dans le top 100 de Google via Serper"""
-    url = "https://google.serper.dev/search"
-    # On demande 100 résultats pour être sûr de trouver le site même s'il est loin
-    payload = {"q": query, "gl": gl, "hl": hl, "num": 100}
-    headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
+def get_serpapi_rank(query, domain, country_config):
+    """Cherche la position via SerpApi avec config dynamique"""
+    params = {
+        "q": query,
+        "location": country_config["location"],
+        "hl": country_config["hl"],
+        "gl": country_config["gl"],
+        "google_domain": country_config["google_domain"],
+        "api_key": SERPAPI_KEY,
+        "num": 100 
+    }
     
     try:
-        response = requests.post(url, headers=headers, json=payload)
-        results = response.json().get('organic', [])
+        search = GoogleSearch(params)
+        results = search.get_dict()
+        organic_results = results.get("organic_results", [])
         
-        for i, result in enumerate(results):
-            if domain.replace("https://", "").replace("http://", "").replace("www.", "") in result['link']:
-                return i + 1, result['link']
+        # Nettoyage du domaine pour la comparaison
+        clean_domain = domain.replace("https://", "").replace("http://", "").replace("www.", "").strip().lower()
+        
+        for result in organic_results:
+            link = result.get("link", "").lower()
+            if clean_domain in link:
+                return result.get("position"), result.get("link")
+        
         return ">100", None
     except Exception as e:
+        st.error(f"Erreur API pour '{query}': {e}")
         return "Erreur", None
 
 # --- INTERFACE ---
-st.title("📈 SEO Rank Tracker")
-st.subheader("Suivi des positions stratégiques")
+st.title("📈 Freelance Rank Tracker (SerpApi)")
+st.info("Suivi des positions sur Google France et USA.")
 
 with st.sidebar:
-    st.header("Paramètres")
-    target_domain = st.text_input("Ton domaine (ex: monsite.fr)", placeholder="monsite.fr")
-    keywords_input = st.text_area("Mots-clés (un par ligne)", height=200)
-    check_btn = st.button("🚀 Lancer le tracking")
+    st.header("⚙️ Paramètres de suivi")
+    target_domain = st.text_input("Domaine à surveiller :", placeholder="ex: monsite.com")
+    keywords_raw = st.text_area("Mots-clés (1 par ligne) :", height=200)
+    
+    st.divider()
+    # Sélection du pays (USA ou France)
+    nom_pays = st.selectbox("Pays cible :", list(CONF_PAYS.keys()))
+    config_actuelle = CONF_PAYS[nom_pays]
+    
+    run_btn = st.button("🚀 Lancer le tracking")
 
-if check_btn and target_domain and keywords_input:
-    keywords = [k.strip() for k in keywords_input.split('\n') if k.strip()]
-    results_list = []
+if run_btn and target_domain and keywords_raw:
+    keywords = [k.strip() for k in keywords_raw.split('\n') if k.strip()]
+    tracking_data = []
     
     progress_bar = st.progress(0)
-    for index, kw in enumerate(keywords):
-        with st.spinner(f"Vérification : {kw}..."):
-            pos, link = check_ranking(kw, target_domain)
-            results_list.append({
-                "Date": datetime.now().strftime("%d/%m/%Y"),
+    
+    for i, kw in enumerate(keywords):
+        with st.spinner(f"Analyse de : {kw} ({nom_pays})..."):
+            # CORRECTION : On passe l'objet config_actuelle
+            pos, url_found = get_serpapi_rank(kw, target_domain, config_actuelle)
+            
+            tracking_data.append({
+                "Date": datetime.now().strftime("%Y-%m-%d"),
                 "Mot-clé": kw,
                 "Position": pos,
-                "URL trouvée": link if link else "N/A"
+                "URL exacte": url_found if url_found else "Non trouvé"
             })
-        progress_bar.progress((index + 1) / len(keywords))
+        progress_bar.progress((i + 1) / len(keywords))
 
-    # Affichage du tableau de bord
-    df = pd.DataFrame(results_list)
+    # --- AFFICHAGE ---
+    df = pd.DataFrame(tracking_data)
     
-    # Statistiques rapides
-    col1, col2, col3 = st.columns(3)
-    top_3 = len(df[df['Position'].apply(lambda x: isinstance(x, int) and x <= 3)])
-    top_10 = len(df[df['Position'].apply(lambda x: isinstance(x, int) and x <= 10)])
+    # Indicateurs (KPIs)
+    c1, c2, c3 = st.columns(3)
+    # Filtrage propre pour les calculs de metrics
+    numeric_pos = df[df['Position'].apply(lambda x: isinstance(x, int))]
+    top_3 = len(numeric_pos[numeric_pos['Position'] <= 3])
+    top_10 = len(numeric_pos[numeric_pos['Position'] <= 10])
     
-    col1.metric("Mots-clés suivis", len(df))
-    col2.metric("Dans le Top 3", top_3)
-    col3.metric("Dans le Top 10", top_10)
+    c1.metric("Mots-clés suivis", len(df))
+    c2.metric("Dans le Top 3", top_3)
+    c3.metric("Dans le Top 10", top_10)
 
-    st.divider()
-    
-    # Style conditionnel pour les positions
-    def color_position(val):
-        if val == 1: return 'background-color: #D4EDDA; color: #155724; font-weight: bold'
-        if isinstance(val, int) and val <= 10: return 'background-color: #FFF3CD; color: #856404'
+    # Style du tableau
+    def highlight_rank(val):
+        if val == 1: return 'background-color: #28a745; color: white;'
+        if isinstance(val, int) and val <= 10: return 'background-color: #fff3cd;'
+        if val == ">100": return 'color: #dc3545;'
         return ''
 
-    st.write("### 📋 Rapport des positions")
-    st.dataframe(df.style.applymap(color_position, subset=['Position']), use_container_width=True)
-    
-    # Bouton de téléchargement CSV
+    st.write(f"### 📊 Résultats - {nom_pays}")
+    st.dataframe(df.style.applymap(highlight_rank, subset=['Position']), use_container_width=True)
+
+    # Export
     csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Exporter en CSV", csv, "rankings.csv", "text/csv")
+    st.download_button("📥 Télécharger l'export CSV", csv, f"rank_tracking_{nom_pays}.csv", "text/csv")
