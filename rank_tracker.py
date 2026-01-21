@@ -7,7 +7,14 @@ from google.oauth2.service_account import Credentials
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="SEO Rank Tracker Multi-Clients", layout="wide")
-SERPAPI_KEY = st.secrets["SERPAPI_KEY"]
+
+# Vérification sécurisée des secrets
+try:
+    SERPAPI_KEY = st.secrets["SERPAPI_KEY"]
+    GCP_CREDS = st.secrets["GCP_SERVICE_ACCOUNT"]
+except Exception as e:
+    st.error("Erreur : Les secrets ne sont pas configurés correctement.")
+    st.stop()
 
 CONF_PAYS = {
     "France": {"gl": "fr", "hl": "fr", "google_domain": "google.fr", "location": "France"},
@@ -29,35 +36,50 @@ def get_serpapi_rank(query, domain, country_config):
         clean_domain = domain.replace("https://", "").replace("http://", "").replace("www.", "").strip().lower()
         for res in organic:
             if clean_domain in res.get("link", "").lower():
-                return res.get("position"), res.get("link")
+                return int(res.get("position")), res.get("link")
         return 101, None
     except: return "Erreur", None
 
 def get_last_position(domain, keyword, nom_pays):
-    """Cherche la dernière position pour CE domaine et CE mot-clé"""
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(st.secrets["GCP_SERVICE_ACCOUNT"], scopes=scope)
+        creds = Credentials.from_service_account_info(GCP_CREDS, scopes=scope)
         client = gspread.authorize(creds)
         sheet = client.open("SEO_Rank_Tracker_DB").sheet1
         records = sheet.get_all_records()
+        
         if not records: return None
+        
         df_h = pd.DataFrame(records)
-        # Filtre crucial sur le Domaine ET le Mot-clé
-        df_f = df_h[(df_h['Domaine'] == domain) & (df_h['Mot-clé'] == keyword) & (df_h['Pays'] == nom_pays)]
+        # Nettoyage des colonnes pour la comparaison
+        df_h['Domaine'] = df_h['Domaine'].astype(str).str.strip().str.lower()
+        df_h['Mot-clé'] = df_h['Mot-clé'].astype(str).str.strip().str.lower()
+        
+        target_dom = str(domain).strip().lower()
+        target_kw = str(keyword).strip().lower()
+        
+        df_f = df_h[(df_h['Domaine'] == target_dom) & (df_h['Mot-clé'] == target_kw)]
+        
         if not df_f.empty:
-            return df_f.iloc[-1]['Position']
+            last_val = df_f.iloc[-1]['Position']
+            # Conversion forcée en entier pour le calcul
+            try:
+                return int(float(last_val))
+            except:
+                return None
     except: return None
     return None
 
 def save_to_google_sheets(df_new, nom_pays):
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(st.secrets["GCP_SERVICE_ACCOUNT"], scopes=scope)
+        creds = Credentials.from_service_account_info(GCP_CREDS, scopes=scope)
         client = gspread.authorize(creds)
         sheet = client.open("SEO_Rank_Tracker_DB").sheet1
         df_new["Pays"] = nom_pays
-        data = df_new.fillna("").astype(str).values.tolist()
+        # On s'assure que le DataFrame suit l'ordre des colonnes du Sheet
+        cols_order = ["Date", "Domaine", "Mot-clé", "Position", "Delta", "URL exacte", "Pays"]
+        data = df_new[cols_order].fillna("").astype(str).values.tolist()
         sheet.append_rows(data)
         return True
     except Exception as e:
@@ -85,8 +107,9 @@ if run_btn and target_domain and keywords_raw:
             last_pos = get_last_position(target_domain, kw, nom_pays)
             
             delta = None
-            if last_pos and isinstance(pos, int) and str(last_pos).isdigit():
-                delta = int(last_pos) - pos 
+            # Calcul du delta uniquement si les deux sont des nombres
+            if isinstance(last_pos, int) and isinstance(pos, int):
+                delta = last_pos - pos 
 
             tracking_data.append({
                 "Date": datetime.now().strftime("%Y-%m-%d"),
@@ -99,13 +122,16 @@ if run_btn and target_domain and keywords_raw:
         bar.progress((i + 1) / len(keywords))
 
     df = pd.DataFrame(tracking_data)
-    if save_to_google_sheets(df, nom_pays):
-        st.success(f"✅ Analyse terminée et sauvegardée pour {target_domain}")
-
-    # --- AFFICHAGE ---
+    
+    # Affichage avant sauvegarde
     st.subheader(f"📊 Résultats : {target_domain}")
     for _, row in df.iterrows():
         c1, c2 = st.columns([3, 1])
         c1.write(f"**{row['Mot-clé']}**")
         val_display = "100+" if row['Position'] == 101 else row['Position']
-        c2.metric(label="Pos", value=val_display, delta=row['Delta'])
+        # Gestion du delta pour l'affichage métrique
+        d_val = row['Delta'] if row['Delta'] is not None else 0
+        c2.metric(label="Pos", value=val_display, delta=int(d_val) if d_val != 0 else None)
+    
+    if save_to_google_sheets(df, nom_pays):
+        st.success(f"✅ Sauvegardé dans Google Sheets")
