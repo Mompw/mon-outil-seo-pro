@@ -91,6 +91,7 @@ if run_btn and target_domain and keywords_raw:
 
             tracking_data.append({
                 "Date": datetime.now().strftime("%Y-%m-%d"),
+                "Domaine": target_domain,  
                 "Mot-clé": kw,
                 "Position": pos,
                 "Delta": delta,
