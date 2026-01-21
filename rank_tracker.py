@@ -41,34 +41,31 @@ def get_serpapi_rank(query, domain, country_config):
     except: return "Erreur", None
 
 def get_last_position(domain, keyword, nom_pays):
+    """Cherche la dernière position en ignorant le formatage des cellules (apostrophes)"""
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(GCP_CREDS, scopes=scope)
         client = gspread.authorize(creds)
         sheet = client.open("SEO_Rank_Tracker_DB").sheet1
-        records = sheet.get_all_records()
         
-        if not records: return None
-        
-        df_h = pd.DataFrame(records)
-        # Nettoyage des colonnes pour la comparaison
-        df_h['Domaine'] = df_h['Domaine'].astype(str).str.strip().str.lower()
-        df_h['Mot-clé'] = df_h['Mot-clé'].astype(str).str.strip().str.lower()
+        all_rows = sheet.get_all_values()
+        if len(all_rows) <= 1: return None 
         
         target_dom = str(domain).strip().lower()
         target_kw = str(keyword).strip().lower()
         
-        df_f = df_h[(df_h['Domaine'] == target_dom) & (df_h['Mot-clé'] == target_kw)]
-        
-        if not df_f.empty:
-            last_val = df_f.iloc[-1]['Position']
-            # Conversion forcée en entier pour le calcul
-            try:
-                return int(float(last_val))
-            except:
-                return None
+        for row in reversed(all_rows):
+            if len(row) >= 4:
+                db_dom = str(row[1]).strip().lower()
+                db_kw = str(row[2]).strip().lower()
+                
+                if db_dom == target_dom and db_kw == target_kw:
+                    # Nettoyage profond pour transformer le texte en nombre
+                    val_str = str(row[3]).replace("'", "").replace(" ", "").strip()
+                    if val_str.isdigit():
+                        return int(val_str)
+        return None
     except: return None
-    return None
 
 def save_to_google_sheets(df_new, nom_pays):
     try:
@@ -77,8 +74,8 @@ def save_to_google_sheets(df_new, nom_pays):
         client = gspread.authorize(creds)
         sheet = client.open("SEO_Rank_Tracker_DB").sheet1
         df_new["Pays"] = nom_pays
-        # On s'assure que le DataFrame suit l'ordre des colonnes du Sheet
         cols_order = ["Date", "Domaine", "Mot-clé", "Position", "Delta", "URL exacte", "Pays"]
+        # On remplace les None par du texte vide pour GSheets
         data = df_new[cols_order].fillna("").astype(str).values.tolist()
         sheet.append_rows(data)
         return True
@@ -107,7 +104,6 @@ if run_btn and target_domain and keywords_raw:
             last_pos = get_last_position(target_domain, kw, nom_pays)
             
             delta = None
-            # Calcul du delta uniquement si les deux sont des nombres
             if isinstance(last_pos, int) and isinstance(pos, int):
                 delta = last_pos - pos 
 
@@ -116,22 +112,26 @@ if run_btn and target_domain and keywords_raw:
                 "Domaine": target_domain,
                 "Mot-clé": kw,
                 "Position": pos,
-                "Delta": delta,
+                "Delta": delta, # On garde le type numérique pour le calcul/affichage
                 "URL exacte": url if url else "N/A"
             })
         bar.progress((i + 1) / len(keywords))
 
     df = pd.DataFrame(tracking_data)
     
-    # Affichage avant sauvegarde
+    # AFFICHAGE
     st.subheader(f"📊 Résultats : {target_domain}")
     for _, row in df.iterrows():
         c1, c2 = st.columns([3, 1])
         c1.write(f"**{row['Mot-clé']}**")
-        val_display = "100+" if row['Position'] == 101 else row['Position']
-        # Gestion du delta pour l'affichage métrique
-        d_val = row['Delta'] if row['Delta'] is not None else 0
-        c2.metric(label="Pos", value=val_display, delta=int(d_val) if d_val != 0 else None)
+        
+        pos_val = row['Position']
+        val_display = "100+" if pos_val == 101 else pos_val
+        
+        # Affichage du delta uniquement s'il existe
+        d_val = row['Delta']
+        c2.metric(label="Pos", value=val_display, delta=int(d_val) if d_val is not None else None)
     
+    # SAUVEGARDE
     if save_to_google_sheets(df, nom_pays):
         st.success(f"✅ Sauvegardé dans Google Sheets")
