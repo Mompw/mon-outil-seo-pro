@@ -7,3 +7,5 @@ numpy
 fpdf
 beautifulsoup4
 google-search-results
+gspread
+google-auth
