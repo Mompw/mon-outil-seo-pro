@@ -6,14 +6,13 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="SEO Rank Tracker Multi-Clients", layout="wide")
+st.set_page_config(page_title="SEO Rank Tracker Pro", layout="wide")
 
-# Vérification sécurisée des secrets
 try:
     SERPAPI_KEY = st.secrets["SERPAPI_KEY"]
     GCP_CREDS = st.secrets["GCP_SERVICE_ACCOUNT"]
-except Exception as e:
-    st.error("Erreur : Les secrets ne sont pas configurés correctement.")
+except:
+    st.error("Erreur : Secrets manquants.")
     st.stop()
 
 CONF_PAYS = {
@@ -21,8 +20,50 @@ CONF_PAYS = {
     "États-Unis": {"gl": "us", "hl": "en", "google_domain": "google.com", "location": "United States"}
 }
 
-# --- FONCTIONS ---
+# --- FONCTIONS DE CACHE ET VÉRIFICATION ---
 
+def check_today_exists(domain, keyword):
+    """Vérifie dans GSheets si le scan a déjà été fait aujourd'hui"""
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(GCP_CREDS, scopes=scope)
+        client = gspread.authorize(creds)
+        sheet = client.open("SEO_Rank_Tracker_DB").worksheet("Suivi")
+        all_rows = sheet.get_all_values()
+        
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        t_dom = str(domain).strip().lower()
+        t_kw = str(keyword).strip().lower()
+
+        for row in reversed(all_rows):
+            if len(row) >= 6:
+                if row[0] == today_str and row[1].strip().lower() == t_dom and row[2].strip().lower() == t_kw:
+                    return int(float(row[3])), row[5] # Position et URL
+        return None, None
+    except: return None, None
+
+def get_last_position(domain, keyword):
+    """Cherche la position précédente (avant aujourd'hui)"""
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(GCP_CREDS, scopes=scope)
+        client = gspread.authorize(creds)
+        sheet = client.open("SEO_Rank_Tracker_DB").worksheet("Suivi")
+        all_rows = sheet.get_all_values()
+        
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        t_dom = str(domain).strip().lower()
+        t_kw = str(keyword).strip().lower()
+
+        for row in reversed(all_rows):
+            if len(row) >= 4 and row[0] != today_str: # On ignore les lignes d'aujourd'hui
+                if row[1].strip().lower() == t_dom and row[2].strip().lower() == t_kw:
+                    val = str(row[3]).replace("'", "").strip()
+                    if val.isdigit(): return int(val)
+        return None
+    except: return None
+
+@st.cache_data(ttl=3600)
 def get_serpapi_rank(query, domain, country_config):
     params = {
         "q": query, "location": country_config["location"], "hl": country_config["hl"],
@@ -40,43 +81,16 @@ def get_serpapi_rank(query, domain, country_config):
         return 101, None
     except: return "Erreur", None
 
-def get_last_position(domain, keyword, nom_pays):
-    """Cherche la dernière position en ignorant le formatage des cellules (apostrophes)"""
+def save_to_google_sheets(df_to_save, nom_pays):
+    if df_to_save.empty: return True
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(GCP_CREDS, scopes=scope)
         client = gspread.authorize(creds)
-        sheet = client.open("SEO_Rank_Tracker_DB").sheet1
-        
-        all_rows = sheet.get_all_values()
-        if len(all_rows) <= 1: return None 
-        
-        target_dom = str(domain).strip().lower()
-        target_kw = str(keyword).strip().lower()
-        
-        for row in reversed(all_rows):
-            if len(row) >= 4:
-                db_dom = str(row[1]).strip().lower()
-                db_kw = str(row[2]).strip().lower()
-                
-                if db_dom == target_dom and db_kw == target_kw:
-                    # Nettoyage profond pour transformer le texte en nombre
-                    val_str = str(row[3]).replace("'", "").replace(" ", "").strip()
-                    if val_str.isdigit():
-                        return int(val_str)
-        return None
-    except: return None
-
-def save_to_google_sheets(df_new, nom_pays):
-    try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(GCP_CREDS, scopes=scope)
-        client = gspread.authorize(creds)
-        sheet = client.open("SEO_Rank_Tracker_DB").sheet1
-        df_new["Pays"] = nom_pays
-        cols_order = ["Date", "Domaine", "Mot-clé", "Position", "Delta", "URL exacte", "Pays"]
-        # On remplace les None par du texte vide pour GSheets
-        data = df_new[cols_order].fillna("").astype(str).values.tolist()
+        sheet = client.open("SEO_Rank_Tracker_DB").worksheet("Suivi")
+        df_to_save["Pays"] = nom_pays
+        cols = ["Date", "Domaine", "Mot-clé", "Position", "Delta", "URL exacte", "Pays"]
+        data = df_to_save[cols].fillna("").astype(str).values.tolist()
         sheet.append_rows(data)
         return True
     except Exception as e:
@@ -84,54 +98,54 @@ def save_to_google_sheets(df_new, nom_pays):
         return False
 
 # --- INTERFACE ---
-st.title("📈 SEO Tracker : Multi-Clients & Evolution")
+st.title("📈 SEO Tracker Intelligent")
 
 with st.sidebar:
-    st.header("⚙️ Configuration")
-    target_domain = st.text_input("Domaine du client :", placeholder="client-abc.com")
-    keywords_raw = st.text_area("Mots-clés (1 par ligne) :")
+    target_domain = st.text_input("Domaine du client :", placeholder="exemple.com")
+    keywords_raw = st.text_area("Mots-clés :")
     nom_pays = st.selectbox("Pays :", list(CONF_PAYS.keys()))
-    run_btn = st.button("🚀 Lancer l'analyse")
+    run_btn = st.button("🚀 Lancer / Actualiser")
+    if st.button("🧹 Vider le cache"):
+        st.cache_data.clear()
 
 if run_btn and target_domain and keywords_raw:
     keywords = [k.strip() for k in keywords_raw.split('\n') if k.strip()]
-    tracking_data = []
-    bar = st.progress(0)
+    results_for_display = []
+    data_to_save = []
     
+    bar = st.progress(0)
     for i, kw in enumerate(keywords):
-        with st.spinner(f"Analyse : {kw}"):
+        # 1. Vérification si déjà fait aujourd'hui
+        pos, url = check_today_exists(target_domain, kw)
+        new_scan = False
+        
+        if pos is None: # Pas encore de donnée pour aujourd'hui
             pos, url = get_serpapi_rank(kw, target_domain, CONF_PAYS[nom_pays])
-            last_pos = get_last_position(target_domain, kw, nom_pays)
-            
-            delta = None
-            if isinstance(last_pos, int) and isinstance(pos, int):
-                delta = last_pos - pos 
+            new_scan = True
+        
+        # 2. Récupération de l'historique pour le Delta
+        last_pos = get_last_position(target_domain, kw)
+        delta = (last_pos - pos) if (isinstance(last_pos, int) and isinstance(pos, int)) else None
 
-            tracking_data.append({
-                "Date": datetime.now().strftime("%Y-%m-%d"),
-                "Domaine": target_domain,
-                "Mot-clé": kw,
-                "Position": pos,
-                "Delta": delta, # On garde le type numérique pour le calcul/affichage
-                "URL exacte": url if url else "N/A"
-            })
+        row_data = {
+            "Date": datetime.now().strftime("%Y-%m-%d"),
+            "Domaine": target_domain, "Mot-clé": kw, "Position": pos,
+            "Delta": delta, "URL exacte": url if url else "N/A"
+        }
+        results_for_display.append(row_data)
+        if new_scan: data_to_save.append(row_data)
         bar.progress((i + 1) / len(keywords))
 
-    df = pd.DataFrame(tracking_data)
-    
-    # AFFICHAGE
-    st.subheader(f"📊 Résultats : {target_domain}")
-    for _, row in df.iterrows():
+    # Affichage
+    df_display = pd.DataFrame(results_for_display)
+    for _, row in df_display.iterrows():
         c1, c2 = st.columns([3, 1])
         c1.write(f"**{row['Mot-clé']}**")
-        
-        pos_val = row['Position']
-        val_display = "100+" if pos_val == 101 else pos_val
-        
-        # Affichage du delta uniquement s'il existe
-        d_val = row['Delta']
-        c2.metric(label="Pos", value=val_display, delta=int(d_val) if d_val is not None else None)
+        c2.metric("Pos", "100+" if row['Position']==101 else row['Position'], delta=row['Delta'])
     
-    # SAUVEGARDE
-    if save_to_google_sheets(df, nom_pays):
-        st.success(f"✅ Sauvegardé dans Google Sheets")
+    # Sauvegarde uniquement des nouvelles analyses
+    if data_to_save:
+        save_to_google_sheets(pd.DataFrame(data_to_save), nom_pays)
+        st.success("✅ Nouvelles données enregistrées.")
+    else:
+        st.info("ℹ️ Données du jour déjà présentes. Aucun crédit consommé.")
